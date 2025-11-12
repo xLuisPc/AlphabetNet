@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 import csv
+from pathlib import Path
 
 def convert_csv(input_file, output_file):
     """
@@ -64,6 +65,10 @@ def convert_csv(input_file, output_file):
     new_df = new_df.sort_values(['dfa_id', 'string'])
     
     # Guardar el nuevo CSV
+    # Crear directorio si no existe
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     print(f"Guardando {output_file}...")
     new_df.to_csv(output_file, index=False)
     
@@ -73,8 +78,11 @@ def convert_csv(input_file, output_file):
     return new_df
 
 if __name__ == '__main__':
-    input_file = 'dataset3000.csv'
-    output_file = 'dataset3000_flat.csv'
+    # Obtener el directorio raíz del proyecto (directorio padre de scripts/)
+    project_root = Path(__file__).parent.parent
     
-    convert_csv(input_file, output_file)
+    input_file = project_root / 'dataset3000.csv'
+    output_file = project_root / 'data' / 'dataset3000_flat.csv'  # Guardar en data/
+    
+    convert_csv(str(input_file), str(output_file))
 
