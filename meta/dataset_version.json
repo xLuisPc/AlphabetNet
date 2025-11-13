@@ -1,0 +1,28 @@
+{
+  "version": "1.0.0",
+  "date": "2025-11-12T19:15:06.462881",
+  "input_file": "/Users/luisperez/Documents/Proyectos/Personales/ModelosLenguajes/dataset3000.csv",
+  "output_file": "/Users/luisperez/Documents/Proyectos/Personales/ModelosLenguajes/data/dataset3000_procesado.csv",
+  "hash": "93808e01f7f5153d87ae139f67f613c93a03270c4598630db539e411ef7ad118",
+  "hash_algorithm": "sha256",
+  "rows": 192119,
+  "columns": [
+    "dfa_id",
+    "string",
+    "label",
+    "regex",
+    "alphabet_decl",
+    "len"
+  ],
+  "num_columns": 6,
+  "file_size": 8227328,
+  "file_format": "csv",
+  "dtypes": {
+    "dfa_id": "int64",
+    "string": "object",
+    "label": "int64",
+    "regex": "object",
+    "alphabet_decl": "object",
+    "len": "int64"
+  }
+}
