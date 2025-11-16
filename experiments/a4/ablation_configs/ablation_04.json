@@ -1,0 +1,8 @@
+{
+  "config_id": "ablation_04",
+  "rnn_type": "GRU",
+  "padding_mode": "right",
+  "dropout": 0.3,
+  "use_automata_conditioning": false,
+  "description": "GRU, padding=right, dropout=0.3, auto_emb=False"
+}

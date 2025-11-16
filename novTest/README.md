@@ -23,12 +23,19 @@
 
 ### Probar con un regex específico
 
+**Opción 1: Comando directo (Windows)**
 ```bash
-# Usar modelo con thresholds optimizados
-python demo/test_model.py \
-  --checkpoint novTest/best\ \(1\).pt \
-  --thresholds novTest/thresholds.json \
-  --regex "(AB)*C"
+python demo/test_model.py --checkpoint "novTest/best (1).pt" --thresholds "novTest/thresholds.json" --regex "A+B"
+```
+
+**Opción 2: Script rápido (Windows)**
+```bash
+novTest\test_regex.bat "A+B"
+```
+
+**Opción 3: Comando directo (Linux/Mac)**
+```bash
+python demo/test_model.py --checkpoint "novTest/best (1).pt" --thresholds "novTest/thresholds.json" --regex "(AB)*C"
 ```
 
 ### Procesar CSV completo
@@ -46,9 +53,31 @@ python demo/test_model.py \
 
 ```bash
 # Modo interactivo para probar múltiples regex
-python demo/test_model.py \
-  --checkpoint novTest/best\ \(1\).pt \
-  --thresholds novTest/thresholds.json
+python demo/test_model.py --checkpoint "novTest/best (1).pt" --thresholds "novTest/thresholds.json"
+```
+
+Luego simplemente escribe regexes cuando te lo pida:
+```
+Ingresa una regex (o 'quit' para salir): A+B
+Ingresa una regex (o 'quit' para salir): (AB)*C
+Ingresa una regex (o 'quit' para salir): quit
+```
+
+### Probar con diferentes thresholds
+
+**Thresholds optimizados (recomendado para uso general):**
+```bash
+python demo/test_model.py --checkpoint "novTest/best (1).pt" --thresholds "novTest/thresholds.json" --regex "TU_REGEX"
+```
+
+**Thresholds bajos (para regex complejos):**
+```bash
+python demo/test_model.py --checkpoint "novTest/best (1).pt" --thresholds "novTest/thresholds_low.json" --regex "TU_REGEX"
+```
+
+**Thresholds muy bajos (máxima sensibilidad):**
+```bash
+python demo/test_model.py --checkpoint "novTest/best (1).pt" --thresholds "novTest/thresholds_very_low.json" --regex "TU_REGEX"
 ```
 
 ## 📈 Métricas del Modelo

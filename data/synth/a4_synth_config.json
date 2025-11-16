@@ -1,0 +1,78 @@
+{
+  "description": "Configuraci\u00f3n para generaci\u00f3n de datos sint\u00e9ticos A4",
+  "version": "1.0",
+  "generation": {
+    "n_len_out": 64,
+    "n_rare": 64,
+    "n_eps_edge": 8,
+    "rare_ratio": 0.7,
+    "random_seed": 42
+  },
+  "train_statistics": {
+    "lengths": {
+      "p50": 8.0,
+      "p90": 47.0,
+      "p95": 55.0,
+      "p99": 63.0,
+      "max": 64
+    },
+    "symbol_freq": {
+      "C": 0.08282554234265772,
+      "G": 0.08569178089684823,
+      "I": 0.08192847531424696,
+      "L": 0.07601002089509785,
+      "D": 0.0861512542528635,
+      "K": 0.0731875417081469,
+      "B": 0.07795731273725783,
+      "J": 0.08227855025216335,
+      "H": 0.0918946712030544,
+      "A": 0.09506722532792176,
+      "F": 0.0844118194050914,
+      "E": 0.0825958056646501
+    },
+    "rare_symbols": [
+      "B",
+      "K",
+      "L"
+    ],
+    "common_symbols": [
+      "A",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H",
+      "I",
+      "J"
+    ]
+  },
+  "length_bands": {
+    "band1": {
+      "min": 56,
+      "max": 63,
+      "description": "p95+1 a p99"
+    },
+    "band2": {
+      "min": 64,
+      "max": 64,
+      "description": "p99+1 a 64"
+    }
+  },
+  "rare_symbols": [
+    "B",
+    "K",
+    "L"
+  ],
+  "common_symbols": [
+    "A",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J"
+  ]
+}

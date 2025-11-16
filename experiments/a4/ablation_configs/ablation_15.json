@@ -1,0 +1,8 @@
+{
+  "config_id": "ablation_15",
+  "rnn_type": "LSTM",
+  "padding_mode": "left",
+  "dropout": 0.3,
+  "use_automata_conditioning": true,
+  "description": "LSTM, padding=left, dropout=0.3, auto_emb=True"
+}

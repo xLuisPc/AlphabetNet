@@ -1,0 +1,11 @@
+{
+  "vocab_size": 14,
+  "alphabet_size": 12,
+  "max_prefix_len": 64,
+  "emb_dim": 96,
+  "hidden_dim": 192,
+  "rnn_type": "GRU",
+  "num_layers": 1,
+  "dropout": 0.2,
+  "padding_idx": 0
+}

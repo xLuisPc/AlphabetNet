@@ -1,0 +1,36 @@
+{
+  "description": "Configuración para regla de decisión A3 - Predicción de alfabeto por autómata",
+  "version": "1.0",
+  "rule": {
+    "type": "votes_and_max_p",
+    "description": "Un símbolo pertenece al alfabeto si: (votes[s] >= k_min) AND (max_p[s] >= threshold_s)",
+    "parameters": {
+      "k_min": 2,
+      "use_thresholds_per_symbol": true,
+      "thresholds_file": "novTest/thresholds.json",
+      "fallback_threshold": 0.5
+    },
+    "alternatives": {
+      "wmean_p_rule": {
+        "description": "pertenece(s) = (wmean_p[s] >= threshold_s)",
+        "enabled": false
+      },
+      "max_p_only_rule": {
+        "description": "pertenece(s) = (max_p[s] >= threshold_s) (sin soporte de votes)",
+        "enabled": false
+      }
+    }
+  },
+  "notes": [
+    "La regla principal combina votes (soporte mínimo) y max_p (umbral de probabilidad máxima)",
+    "k_min=2 significa que al menos 2 prefijos deben votar por el símbolo",
+    "Los thresholds por símbolo se cargan desde novTest/thresholds.json",
+    "Alternativas disponibles pero no activadas por defecto",
+    "No se consideran <PAD> ni <EPS> como símbolos candidatos"
+  ],
+  "exclusions": {
+    "symbols": ["<PAD>", "<EPS>"],
+    "reason": "Tokens especiales, no son símbolos del alfabeto"
+  }
+}
+
