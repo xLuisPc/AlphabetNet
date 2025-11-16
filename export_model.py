@@ -11,7 +11,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 
 import torch
 import torch.nn as nn
@@ -189,6 +189,41 @@ def export_to_onnx(model: AlphabetNet, output_path: Path, hparams: dict,
         raise
 
 
+def save_model_with_thresholds(checkpoint_path: Path, output_path: Path,
+                                thresholds_path: Optional[Path] = None):
+    """
+    Guarda un checkpoint mejorado con thresholds incluidos.
+    
+    Args:
+        checkpoint_path: Path al checkpoint original
+        output_path: Path donde guardar el checkpoint mejorado
+        thresholds_path: Path opcional al archivo JSON con thresholds
+    """
+    logger.info(f"Cargando checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Cargar thresholds si están disponibles
+    thresholds = None
+    if thresholds_path and thresholds_path.exists():
+        with open(thresholds_path, 'r') as f:
+            thresholds_data = json.load(f)
+            thresholds = thresholds_data.get('per_symbol', {})
+            logger.info(f"✓ Thresholds cargados desde: {thresholds_path}")
+    elif 'thresholds' in checkpoint:
+        thresholds = checkpoint['thresholds']
+        logger.info("✓ Thresholds encontrados en checkpoint original")
+    
+    # Crear nuevo checkpoint con thresholds
+    enhanced_checkpoint = checkpoint.copy()
+    if thresholds is not None:
+        enhanced_checkpoint['thresholds'] = thresholds
+        enhanced_checkpoint['alphabet'] = ALPHABET
+    
+    # Guardar checkpoint mejorado
+    torch.save(enhanced_checkpoint, output_path)
+    logger.info(f"✓ Checkpoint mejorado guardado en: {output_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Exportar modelo AlphabetNet a ONNX')
     
@@ -198,6 +233,10 @@ def main():
                        help='Path al archivo de hiperparámetros')
     parser.add_argument('--output', type=str, default='alphabetnet.onnx',
                        help='Path de salida para el modelo ONNX (default: alphabetnet.onnx)')
+    parser.add_argument('--thresholds', type=str, default=None,
+                       help='Path al archivo JSON con thresholds por símbolo')
+    parser.add_argument('--enhanced_checkpoint', type=str, default=None,
+                       help='Path opcional para guardar checkpoint mejorado con thresholds')
     parser.add_argument('--batch_size', type=int, default=1,
                        help='Tamaño de batch para ejemplo (default: 1)')
     parser.add_argument('--opset_version', type=int, default=13,
@@ -224,6 +263,12 @@ def main():
     
     model = load_model_from_checkpoint(checkpoint_path, device, hparams)
     
+    # Guardar checkpoint mejorado con thresholds si se especifica
+    if args.enhanced_checkpoint:
+        thresholds_path = Path(args.thresholds) if args.thresholds else None
+        output_checkpoint = Path(args.enhanced_checkpoint)
+        save_model_with_thresholds(checkpoint_path, output_checkpoint, thresholds_path)
+    
     # Exportar a ONNX
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -240,6 +285,8 @@ def main():
     logger.info("EXPORTACIÓN COMPLETADA")
     logger.info("="*60)
     logger.info(f"Modelo ONNX guardado en: {output_path}")
+    if args.enhanced_checkpoint:
+        logger.info(f"Checkpoint mejorado guardado en: {args.enhanced_checkpoint}")
     logger.info("="*60)
 
 

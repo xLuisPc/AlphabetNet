@@ -41,12 +41,11 @@ def main():
         'model.py',
         'metrics.py',
         'train.py',
-        'generate_pr_curves.py',
         'find_thresholds.py',
         'export_model.py',
+        'infer.py',
         'hparams.json',
-        'data/alphabet/train_wide.parquet',
-        'data/alphabet/val_wide.parquet'
+        'data/dataset_regex_sigma.csv'
     ]
     
     print("Verificando archivos necesarios...")
@@ -67,20 +66,20 @@ def main():
     # Pipeline de ejecución
     pipeline = [
         (
-            "python train.py --train_data data/alphabet/train_wide.parquet --val_data data/alphabet/val_wide.parquet --checkpoint_dir checkpoints",
-            "1. Entrenamiento del modelo"
+            "python train.py --train_data data/dataset_regex_sigma.csv --val_data data/dataset_regex_sigma.csv --checkpoint_dir checkpoints",
+            "1. Entrenamiento del modelo (regex → alfabeto)"
         ),
         (
-            "python generate_pr_curves.py --checkpoint checkpoints/best.pt --val_data data/alphabet/val_wide.parquet --output_dir checkpoints",
-            "2. Generación de curvas PR y reporte"
+            "python find_thresholds.py --checkpoint checkpoints/best.pt --val_data data/dataset_regex_sigma.csv --output_dir checkpoints",
+            "2. Búsqueda de umbrales óptimos por símbolo"
         ),
         (
-            "python find_thresholds.py --checkpoint checkpoints/best.pt --val_data data/alphabet/val_wide.parquet --output_dir checkpoints",
-            "3. Búsqueda de umbrales óptimos"
+            "python export_model.py --checkpoint checkpoints/best.pt --thresholds checkpoints/thresholds.json --enhanced_checkpoint checkpoints/best_with_thresholds.pt --output alphabetnet.onnx",
+            "3. Exportación a ONNX con thresholds"
         ),
         (
-            "python export_model.py --checkpoint checkpoints/best.pt --output alphabetnet.onnx",
-            "4. Exportación a ONNX"
+            "python infer.py --checkpoint checkpoints/best.pt --regex \"(AB)*C\" --thresholds checkpoints/thresholds.json",
+            "4. Demo de inferencia: regex → alfabeto"
         )
     ]
     
@@ -98,12 +97,9 @@ def main():
     expected_files = {
         'checkpoints/best.pt': 'Mejor checkpoint',
         'checkpoints/last.pt': 'Último checkpoint',
+        'checkpoints/best_with_thresholds.pt': 'Checkpoint mejorado con thresholds',
         'checkpoints/train_log.csv': 'Log de entrenamiento',
-        'checkpoints/pr_macro.png': 'Curva PR macro',
-        'checkpoints/pr_top10.png': 'Curvas PR top-10',
-        'checkpoints/per_symbol_ap.csv': 'AP por símbolo',
-        'checkpoints/A2_report.md': 'Reporte de validación',
-        'checkpoints/thresholds.json': 'Umbrales óptimos',
+        'checkpoints/thresholds.json': 'Umbrales óptimos por símbolo',
         'checkpoints/threshold_eval.csv': 'Evaluación de umbrales',
         'alphabetnet.onnx': 'Modelo ONNX exportado'
     }
@@ -119,12 +115,15 @@ def main():
     print(f"\n{'='*60}")
     print("PIPELINE COMPLETADO")
     print(f"{'='*60}\n")
-    print("Archivos listos para descargar:")
+    print("AlphabetNet: Regex → Alfabeto del Autómata")
+    print("\nArchivos listos para descargar:")
     print("  - alphabetnet.onnx (modelo ONNX)")
-    print("  - checkpoints/best.pt (mejor modelo)")
-    print("  - checkpoints/A2_report.md (reporte)")
-    print("  - checkpoints/*.png (gráficos)")
-    print("  - checkpoints/*.csv (métricas)")
+    print("  - checkpoints/best_with_thresholds.pt (modelo + thresholds)")
+    print("  - checkpoints/thresholds.json (umbrales por símbolo)")
+    print("  - checkpoints/train_log.csv (métricas de entrenamiento)")
+    print("  - checkpoints/threshold_eval.csv (evaluación de umbrales)")
+    print("\nPara usar el modelo en inferencia:")
+    print("  python infer.py --checkpoint checkpoints/best.pt --regex \"(AB)*C\" --thresholds checkpoints/thresholds.json")
 
 if __name__ == '__main__':
     main()

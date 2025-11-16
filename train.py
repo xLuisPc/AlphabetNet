@@ -63,25 +63,34 @@ def char_to_idx(char: str) -> int:
         raise ValueError(f"Carácter inválido: {char}")
 
 
-def prefix_to_indices(prefix: str, max_len: int = MAX_PREFIX_LEN) -> Tuple[torch.Tensor, int]:
+def regex_to_indices(regex: str, max_len: int = MAX_PREFIX_LEN) -> Tuple[torch.Tensor, int]:
     """
-    Convierte un prefijo string a índices de caracteres.
+    Convierte un regex string a índices de caracteres.
     
     Args:
-        prefix: String del prefijo (puede ser '<EPS>' o cadena de caracteres A-L)
+        regex: String del regex (puede contener cualquier carácter, pero solo A-L se tokenizan)
         max_len: Longitud máxima (padding)
     
     Returns:
         Tuple (indices, length) donde:
         - indices: Tensor 1D de índices (padded con PAD=0)
-        - length: Longitud real del prefijo
+        - length: Longitud real del regex (solo caracteres A-L, otros se ignoran)
     """
-    if prefix == '<EPS>' or prefix == '':
+    # Tokenizar regex: solo caracteres A-L se convierten a índices, otros se ignoran
+    # Para compatibilidad, si el regex está vacío usamos <EPS>
+    if regex == '' or regex is None:
         indices = [SPECIAL_TOKENS['<EPS>']]
         length = 1
     else:
-        indices = [char_to_idx(c) for c in prefix]
-        length = len(indices)
+        # Extraer solo caracteres válidos (A-L) del regex
+        valid_chars = [c for c in regex if c in ALPHABET]
+        if len(valid_chars) == 0:
+            # Si no hay caracteres válidos, usar <EPS>
+            indices = [SPECIAL_TOKENS['<EPS>']]
+            length = 1
+        else:
+            indices = [char_to_idx(c) for c in valid_chars]
+            length = len(indices)
     
     # Padding
     if length < max_len:
@@ -89,31 +98,38 @@ def prefix_to_indices(prefix: str, max_len: int = MAX_PREFIX_LEN) -> Tuple[torch
     
     return torch.tensor(indices[:max_len], dtype=torch.long), length
 
+# Alias para compatibilidad hacia atrás
+prefix_to_indices = regex_to_indices
+
 
 class AlphabetDataset(Dataset):
     """
-    Dataset para datos en formato wide (multi-hot).
+    Dataset para datos en formato regex-sigma (CSV).
     
     Formato esperado del DataFrame:
     - dfa_id: ID del autómata
-    - prefix: String del prefijo
-    - y: Lista de 12 enteros (0 o 1) indicando si cada símbolo es válido
+    - regex: String del regex del autómata
+    - A, B, C, ..., L: Columnas con 0/1 indicando si cada símbolo pertenece al alfabeto
     """
     
-    def __init__(self, parquet_path: Path, max_prefix_len: int = MAX_PREFIX_LEN):
+    def __init__(self, csv_path: Path, max_regex_len: int = MAX_PREFIX_LEN):
         """
         Args:
-            parquet_path: Path al archivo parquet con formato wide
-            max_prefix_len: Longitud máxima de prefijos
+            csv_path: Path al archivo CSV con formato regex-sigma
+            max_regex_len: Longitud máxima de regex
         """
-        logger.info(f"Cargando dataset: {parquet_path}")
-        self.df = pd.read_parquet(parquet_path)
-        self.max_prefix_len = max_prefix_len
+        logger.info(f"Cargando dataset: {csv_path}")
+        self.df = pd.read_csv(csv_path)
+        self.max_regex_len = max_regex_len
         
         logger.info(f"  - Total de ejemplos: {len(self.df):,}")
         
-        # Convertir y a arrays numpy
-        self.labels = np.array(self.df['y'].tolist(), dtype=np.float32)
+        # Convertir columnas A-L a arrays numpy
+        label_columns = [col for col in ALPHABET if col in self.df.columns]
+        if len(label_columns) != ALPHABET_SIZE:
+            raise ValueError(f"Faltan columnas de alfabeto. Esperadas: {ALPHABET_SIZE}, encontradas: {len(label_columns)}")
+        
+        self.labels = self.df[label_columns].values.astype(np.float32)
         logger.info(f"  - Forma de labels: {self.labels.shape}")
     
     def __len__(self) -> int:
@@ -125,21 +141,21 @@ class AlphabetDataset(Dataset):
         
         Returns:
             Dict con:
-            - 'prefix_indices': Tensor 1D de índices (padded)
+            - 'prefix_indices': Tensor 1D de índices (padded) - usando nombre antiguo para compatibilidad
             - 'length': Tensor escalar con longitud real
             - 'y': Tensor 1D con etiquetas multi-hot (12 elementos)
         """
         row = self.df.iloc[idx]
-        prefix = str(row['prefix'])
+        regex = str(row['regex'])
         
-        # Convertir prefijo a índices
-        prefix_indices, length = prefix_to_indices(prefix, self.max_prefix_len)
+        # Convertir regex a índices
+        regex_indices, length = regex_to_indices(regex, self.max_regex_len)
         
-        # Obtener etiquetas
-        y = torch.tensor(row['y'], dtype=torch.float32)
+        # Obtener etiquetas desde columnas A-L
+        y = torch.tensor(self.labels[idx], dtype=torch.float32)
         
         return {
-            'prefix_indices': prefix_indices,
+            'prefix_indices': regex_indices,  # Usando nombre antiguo para compatibilidad con model.forward
             'length': torch.tensor(length, dtype=torch.long),
             'y': y
         }
@@ -170,7 +186,7 @@ def collate_fn(batch: list) -> Dict[str, torch.Tensor]:
 
 
 class EarlyStopping:
-    """Early stopping basado en auPRC macro."""
+    """Early stopping basado en F1 macro."""
     
     def __init__(self, patience: int = 8, min_delta: float = 0.0):
         """
@@ -187,7 +203,7 @@ class EarlyStopping:
     def __call__(self, score: float) -> bool:
         """
         Args:
-            score: Score a monitorear (mayor es mejor)
+            score: Score a monitorear (mayor es mejor) - F1 macro
         
         Returns:
             True si debe parar, False en caso contrario
@@ -331,11 +347,11 @@ def main():
     
     # Paths
     parser.add_argument('--train_data', type=str,
-                       default='data/alphabet/train_wide.parquet',
-                       help='Path al archivo de entrenamiento (parquet)')
+                       default='data/dataset_regex_sigma.csv',
+                       help='Path al archivo de entrenamiento (CSV regex-sigma)')
     parser.add_argument('--val_data', type=str,
-                       default='data/alphabet/val_wide.parquet',
-                       help='Path al archivo de validación (parquet)')
+                       default='data/dataset_regex_sigma.csv',
+                       help='Path al archivo de validación (CSV regex-sigma)')
     parser.add_argument('--checkpoint_dir', type=str,
                        default='checkpoints',
                        help='Directorio para guardar checkpoints')
@@ -493,7 +509,7 @@ def main():
     
     # Inicializar variables de entrenamiento
     start_epoch = 0
-    best_auprc_macro = -np.inf
+    best_f1_macro = -np.inf
     log_file = checkpoint_dir / 'train_log.csv'
     
     # Resumir entrenamiento si se especifica
@@ -502,12 +518,16 @@ def main():
         start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
         # Cargar mejor métrica desde el checkpoint
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        if 'metrics' in checkpoint and 'macro_auprc' in checkpoint['metrics']:
-            best_auprc_macro = checkpoint['metrics']['macro_auprc']
+        if 'metrics' in checkpoint:
+            if 'f1_macro' in checkpoint['metrics']:
+                best_f1_macro = checkpoint['metrics']['f1_macro']
+            elif 'macro_auprc' in checkpoint['metrics']:
+                # Compatibilidad hacia atrás
+                best_f1_macro = checkpoint['metrics']['macro_auprc']
     
     # Logging CSV
-    log_columns = ['epoch', 'loss_tr', 'loss_val', 'auPRC_macro', 'auPRC_micro',
-                   'f1_at_threshold', 'coverage', 'LR']
+    log_columns = ['epoch', 'loss_tr', 'loss_val', 'f1_macro', 'f1_min', 'ece',
+                   'auPRC_macro', 'auPRC_micro', 'f1_at_threshold', 'coverage', 'LR']
     
     # Inicializar log si no existe
     if not log_file.exists():
@@ -538,6 +558,9 @@ def main():
         # Validar
         val_metrics = validate(model, val_loader, criterion, device, ALPHABET)
         logger.info(f"Val loss: {val_metrics['loss']:.6f}")
+        logger.info(f"Val F1 macro: {val_metrics['f1_macro']:.6f}")
+        logger.info(f"Val F1 min: {val_metrics['f1_min']:.6f}")
+        logger.info(f"Val ECE: {val_metrics['ece']:.6f}")
         logger.info(f"Val auPRC macro: {val_metrics['macro_auprc']:.6f}")
         logger.info(f"Val auPRC micro: {val_metrics['micro_auprc']:.6f}")
         logger.info(f"Val F1@0.5: {val_metrics['f1_at_threshold']:.6f}")
@@ -556,6 +579,9 @@ def main():
             epoch + 1,
             train_loss,
             val_metrics['loss'],
+            val_metrics['f1_macro'],
+            val_metrics['f1_min'],
+            val_metrics['ece'],
             val_metrics['macro_auprc'] if not np.isnan(val_metrics['macro_auprc']) else '',
             val_metrics['micro_auprc'] if not np.isnan(val_metrics['micro_auprc']) else '',
             val_metrics['f1_at_threshold'],
@@ -570,24 +596,24 @@ def main():
         last_checkpoint = checkpoint_dir / 'last.pt'
         save_checkpoint(model, optimizer, epoch + 1, val_metrics, last_checkpoint)
         
-        # Guardar mejor checkpoint por auPRC macro
-        auprc_macro = val_metrics['macro_auprc']
-        if not np.isnan(auprc_macro) and auprc_macro > best_auprc_macro:
-            best_auprc_macro = auprc_macro
+        # Guardar mejor checkpoint por F1 macro
+        f1_macro = val_metrics['f1_macro']
+        if not np.isnan(f1_macro) and f1_macro > best_f1_macro:
+            best_f1_macro = f1_macro
             best_checkpoint = checkpoint_dir / 'best.pt'
             save_checkpoint(model, optimizer, epoch + 1, val_metrics, best_checkpoint, is_best=True)
         
-        # Early stopping (solo si auPRC macro es válido)
-        if not np.isnan(auprc_macro):
-            if early_stopping(auprc_macro):
+        # Early stopping (solo si F1 macro es válido)
+        if not np.isnan(f1_macro):
+            if early_stopping(f1_macro):
                 logger.info(f"\nEarly stopping activado después de {epoch + 1} épocas")
-                logger.info(f"Mejor auPRC macro: {best_auprc_macro:.6f}")
+                logger.info(f"Mejor F1 macro: {best_f1_macro:.6f}")
                 break
     
     logger.info("\n" + "="*60)
     logger.info("ENTRENAMIENTO COMPLETADO")
     logger.info("="*60)
-    logger.info(f"Mejor auPRC macro: {best_auprc_macro:.6f}")
+    logger.info(f"Mejor F1 macro: {best_f1_macro:.6f}")
     logger.info(f"Checkpoints guardados en: {checkpoint_dir}")
     logger.info(f"Log guardado en: {log_file}")
     logger.info("="*60)

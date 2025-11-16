@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import precision_recall_curve, f1_score, precision_score, recall_score
 
 from model import AlphabetNet
-from train import AlphabetDataset, collate_fn, ALPHABET, MAX_PREFIX_LEN
+from train import AlphabetDataset, collate_fn, ALPHABET, MAX_PREFIX_LEN, regex_to_indices
 
 # Configurar logging
 logging.basicConfig(
@@ -288,8 +288,8 @@ def main():
     
     parser.add_argument('--checkpoint', type=str, default='checkpoints/best.pt',
                        help='Path al checkpoint (default: checkpoints/best.pt)')
-    parser.add_argument('--val_data', type=str, default='data/alphabet/val_wide.parquet',
-                       help='Path al archivo de validación (parquet)')
+    parser.add_argument('--val_data', type=str, default='data/dataset_regex_sigma.csv',
+                       help='Path al archivo de validación (CSV regex-sigma)')
     parser.add_argument('--hparams', type=str, default='hparams.json',
                        help='Path al archivo de hiperparámetros')
     parser.add_argument('--output_dir', type=str, default='checkpoints',
@@ -318,7 +318,7 @@ def main():
     
     model = load_model_from_checkpoint(checkpoint_path, device, hparams)
     
-    # Cargar dataset de validación
+    # Cargar dataset de validación (CSV regex-sigma)
     val_dataset = AlphabetDataset(Path(args.val_data), MAX_PREFIX_LEN)
     val_loader = DataLoader(
         val_dataset,
@@ -337,7 +337,7 @@ def main():
     model.eval()
     with torch.no_grad():
         for batch in val_loader:
-            prefix_indices = batch['prefix_indices'].to(device)
+            prefix_indices = batch['prefix_indices'].to(device)  # Nota: sigue usando 'prefix_indices' por compatibilidad
             lengths = batch['lengths'].to(device)
             y_true = batch['y'].to(device)
             

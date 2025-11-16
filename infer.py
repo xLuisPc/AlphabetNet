@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 
 from model import AlphabetNet
-from train import ALPHABET, MAX_PREFIX_LEN, prefix_to_indices, char_to_idx
+from train import ALPHABET, MAX_PREFIX_LEN, regex_to_indices, char_to_idx
 
 # Configurar logging
 logging.basicConfig(
@@ -59,11 +59,90 @@ def load_model_from_checkpoint(checkpoint_path: Path, device: torch.device,
     return model
 
 
+def infer_one_regex(model: AlphabetNet, regex: str, device: torch.device,
+                    automata_id: Optional[int] = None) -> np.ndarray:
+    """
+    Infiere probabilidades de símbolos para un regex.
+    
+    Args:
+        model: Modelo AlphabetNet
+        regex: String del regex del autómata
+        device: Dispositivo (CPU/GPU)
+        automata_id: ID del autómata (opcional, solo si use_automata_conditioning=True)
+    
+    Returns:
+        Array numpy de forma (alphabet_size,) con probabilidades p_sigma
+    """
+    # Convertir regex a índices
+    regex_indices, length = regex_to_indices(regex, MAX_PREFIX_LEN)
+    
+    # Preparar tensores para batch de tamaño 1
+    regex_indices = regex_indices.unsqueeze(0).to(device)  # (1, max_len)
+    lengths = torch.tensor([length], dtype=torch.long).to(device)  # (1,)
+    
+    # Preparar automata_id si está disponible
+    automata_ids = None
+    if automata_id is not None and model.use_automata_conditioning:
+        automata_ids = torch.tensor([automata_id], dtype=torch.long).to(device)  # (1,)
+    
+    # Forward pass
+    model.eval()
+    with torch.no_grad():
+        logits = model(regex_indices, lengths, automata_ids=automata_ids, return_logits=True)
+        probs = torch.sigmoid(logits)  # (1, alphabet_size)
+    
+    # Convertir a numpy
+    probs_np = probs.cpu().numpy().flatten()  # (alphabet_size,)
+    
+    return probs_np
+
+
+def predict_alphabet_from_regex(regex: str, model: AlphabetNet, device: torch.device,
+                                threshold_per_symbol: Optional[Dict[str, float]] = None,
+                                alphabet: List[str] = ALPHABET) -> Dict[str, any]:
+    """
+    Predice el alfabeto del autómata desde un regex.
+    
+    Args:
+        regex: String del regex del autómata
+        model: Modelo AlphabetNet entrenado
+        device: Dispositivo (CPU/GPU)
+        threshold_per_symbol: Dict con umbrales por símbolo: {symbol: threshold}
+                             Si None, usa 0.5 para todos
+        alphabet: Lista de nombres de símbolos
+    
+    Returns:
+        Dict con:
+        {
+            'p_sigma': Lista de probabilidades por símbolo [p_A, p_B, ..., p_L],
+            'sigma_hat': Lista de símbolos con probabilidad >= threshold
+        }
+    """
+    if threshold_per_symbol is None:
+        threshold_per_symbol = {sym: 0.5 for sym in alphabet}
+    
+    # Inferir probabilidades
+    p_sigma = infer_one_regex(model, regex, device)
+    
+    # Construir sigma_hat usando thresholds por símbolo
+    sigma_hat = []
+    for i, symbol in enumerate(alphabet):
+        threshold = threshold_per_symbol.get(symbol, 0.5)
+        if p_sigma[i] >= threshold:
+            sigma_hat.append(symbol)
+    
+    return {
+        'p_sigma': p_sigma.tolist(),
+        'sigma_hat': sigma_hat
+    }
+
+
 def predict_top_k(model: AlphabetNet, prefix: str, device: torch.device,
                   automata_id: Optional[int] = None, top_k: int = 5,
                   alphabet: List[str] = ALPHABET) -> List[Tuple[str, float]]:
     """
     Predice top-k símbolos más probables después de un prefijo.
+    (Función legacy para compatibilidad)
     
     Args:
         model: Modelo AlphabetNet
@@ -76,11 +155,11 @@ def predict_top_k(model: AlphabetNet, prefix: str, device: torch.device,
     Returns:
         Lista de tuplas (symbol, probability) ordenadas por probabilidad descendente
     """
-    # Convertir prefijo a índices
-    prefix_indices, length = prefix_to_indices(prefix, MAX_PREFIX_LEN)
+    # Usar regex_to_indices (es un alias de prefix_to_indices)
+    regex_indices, length = regex_to_indices(prefix, MAX_PREFIX_LEN)
     
     # Preparar tensores para batch de tamaño 1
-    prefix_indices = prefix_indices.unsqueeze(0).to(device)  # (1, max_len)
+    regex_indices = regex_indices.unsqueeze(0).to(device)  # (1, max_len)
     lengths = torch.tensor([length], dtype=torch.long).to(device)  # (1,)
     
     # Preparar automata_id si está disponible
@@ -91,7 +170,7 @@ def predict_top_k(model: AlphabetNet, prefix: str, device: torch.device,
     # Forward pass
     model.eval()
     with torch.no_grad():
-        logits = model(prefix_indices, lengths, automata_ids=automata_ids, return_logits=True)
+        logits = model(regex_indices, lengths, automata_ids=automata_ids, return_logits=True)
         probs = torch.sigmoid(logits)  # (1, alphabet_size)
     
     # Convertir a numpy
@@ -136,17 +215,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
-  # Predicción básica
-  python infer.py --checkpoint checkpoints/best.pt --prefix "ABC"
+  # Predicción básica desde regex
+  python infer.py --checkpoint checkpoints/best.pt --regex "(AB)*C"
   
-  # Con autómata ID
-  python infer.py --checkpoint checkpoints/best.pt --prefix "ABC" --automata_id 0
+  # Con thresholds personalizados
+  python infer.py --checkpoint checkpoints/best.pt --regex "(AB)*C" --thresholds checkpoints/thresholds.json
   
-  # Top-10 símbolos
-  python infer.py --checkpoint checkpoints/best.pt --prefix "<EPS>" --top_k 10
-  
-  # Prefijo vacío
-  python infer.py --checkpoint checkpoints/best.pt --prefix ""
+  # Predicción legacy con prefijo (compatibilidad hacia atrás)
+  python infer.py --checkpoint checkpoints/best.pt --prefix "ABC" --top_k 10
         """
     )
     
@@ -154,12 +230,16 @@ Ejemplos:
                        help='Path al checkpoint del modelo')
     parser.add_argument('--hparams', type=str, default='hparams.json',
                        help='Path al archivo de hiperparámetros')
-    parser.add_argument('--prefix', type=str, required=True,
-                       help='Prefijo string (puede ser "<EPS>" o cadena A-L)')
+    parser.add_argument('--regex', type=str, default=None,
+                       help='Regex del autómata (nueva API)')
+    parser.add_argument('--prefix', type=str, default=None,
+                       help='Prefijo string (legacy, usar --regex en su lugar)')
+    parser.add_argument('--thresholds', type=str, default=None,
+                       help='Path al archivo JSON con thresholds por símbolo')
     parser.add_argument('--automata_id', type=int, default=None,
                        help='ID del autómata (opcional, solo si use_automata_conditioning=True)')
     parser.add_argument('--top_k', type=int, default=5,
-                       help='Número de símbolos top a retornar (default: 5)')
+                       help='Número de símbolos top a retornar (default: 5, solo para --prefix)')
     parser.add_argument('--output', type=str, default=None,
                        help='Archivo de salida (opcional, si no se especifica imprime a stdout)')
     
@@ -184,33 +264,79 @@ Ejemplos:
     
     model = load_model_from_checkpoint(checkpoint_path, device, hparams)
     
-    # Normalizar prefijo
-    prefix = args.prefix.strip()
-    if prefix == '' or prefix == '<EPS>':
-        prefix = '<EPS>'
+    # Cargar thresholds si se especifica
+    threshold_per_symbol = None
+    if args.thresholds:
+        thresholds_path = Path(args.thresholds)
+        if thresholds_path.exists():
+            with open(thresholds_path, 'r') as f:
+                thresholds_data = json.load(f)
+                threshold_per_symbol = thresholds_data.get('per_symbol', {})
+                logger.info(f"✓ Thresholds cargados desde: {thresholds_path}")
     
-    # Validar prefijo
-    if prefix != '<EPS>':
-        for char in prefix:
-            if char not in ALPHABET:
-                raise ValueError(f"Carácter inválido en prefijo: '{char}'. Solo se permiten caracteres A-L o '<EPS>'.")
-    
-    # Hacer predicción
-    logger.info(f"Prediciendo símbolos para prefijo: '{prefix}'")
-    if args.automata_id is not None:
-        logger.info(f"Usando autómata ID: {args.automata_id}")
-    
-    results = predict_top_k(
-        model,
-        prefix,
-        device,
-        automata_id=args.automata_id,
-        top_k=args.top_k,
-        alphabet=ALPHABET
-    )
-    
-    # Formatear salida
-    output = format_output(results, prefix, args.automata_id)
+    # Determinar modo: regex (nuevo) o prefix (legacy)
+    if args.regex:
+        # Modo nuevo: regex → alfabeto
+        regex = args.regex.strip()
+        logger.info(f"Prediciendo alfabeto desde regex: '{regex}'")
+        
+        result = predict_alphabet_from_regex(
+            regex,
+            model,
+            device,
+            threshold_per_symbol=threshold_per_symbol,
+            alphabet=ALPHABET
+        )
+        
+        # Formatear salida
+        output_lines = []
+        output_lines.append("="*60)
+        output_lines.append("PREDICCIÓN DE ALFABETO DESDE REGEX")
+        output_lines.append("="*60)
+        output_lines.append(f"Regex: '{regex}'")
+        output_lines.append("")
+        output_lines.append("Probabilidades por símbolo (p_sigma):")
+        output_lines.append("-"*60)
+        for i, symbol in enumerate(ALPHABET):
+            prob = result['p_sigma'][i]
+            threshold = threshold_per_symbol.get(symbol, 0.5) if threshold_per_symbol else 0.5
+            marker = "✓" if prob >= threshold else " "
+            output_lines.append(f"{marker} {symbol}: {prob:.6f} (threshold: {threshold:.4f})")
+        output_lines.append("")
+        output_lines.append(f"Símbolos predichos (sigma_hat): {', '.join(result['sigma_hat'])}")
+        output_lines.append("="*60)
+        
+        output = "\n".join(output_lines)
+        
+    elif args.prefix:
+        # Modo legacy: prefix → top-k símbolos
+        prefix = args.prefix.strip()
+        if prefix == '' or prefix == '<EPS>':
+            prefix = '<EPS>'
+        
+        # Validar prefijo
+        if prefix != '<EPS>':
+            for char in prefix:
+                if char not in ALPHABET:
+                    raise ValueError(f"Carácter inválido en prefijo: '{char}'. Solo se permiten caracteres A-L o '<EPS>'.")
+        
+        logger.info(f"Prediciendo símbolos para prefijo: '{prefix}'")
+        if args.automata_id is not None:
+            logger.info(f"Usando autómata ID: {args.automata_id}")
+        
+        results = predict_top_k(
+            model,
+            prefix,
+            device,
+            automata_id=args.automata_id,
+            top_k=args.top_k,
+            alphabet=ALPHABET
+        )
+        
+        # Formatear salida
+        output = format_output(results, prefix, args.automata_id)
+    else:
+        raise ValueError("Debe especificar --regex o --prefix")
     
     # Guardar o imprimir
     if args.output:

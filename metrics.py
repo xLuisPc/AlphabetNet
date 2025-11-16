@@ -6,6 +6,10 @@ Calcula métricas de clasificación multi-etiqueta a nivel símbolo:
 - micro-auPRC (Average Precision agregada)
 - F1@threshold
 - Coverage (porcentaje de símbolos con AP definido)
+- F1 macro por símbolo
+- F1 mínimo por símbolo
+- ECE (Expected Calibration Error)
+- Exactitud de conjunto por autómata
 """
 
 import numpy as np
@@ -169,6 +173,196 @@ def compute_pos_weight(y_true: np.ndarray) -> torch.Tensor:
     return torch.tensor(pos_weight, dtype=torch.float32)
 
 
+def expected_calibration_error(y_true: np.ndarray, y_prob: np.ndarray, 
+                               n_bins: int = 10) -> float:
+    """
+    Calcula Expected Calibration Error (ECE).
+    
+    ECE mide qué tan bien calibradas están las probabilidades del modelo.
+    Un ECE bajo indica que las probabilidades son confiables.
+    
+    Args:
+        y_true: Array de forma (n_samples, n_symbols) o (n_samples,) con etiquetas binarias
+        y_prob: Array de forma (n_samples, n_symbols) o (n_samples,) con probabilidades
+        n_bins: Número de bins para la calibración (default: 10)
+    
+    Returns:
+        ECE (Expected Calibration Error)
+    """
+    # Convertir a numpy si son tensores de PyTorch
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    if isinstance(y_prob, torch.Tensor):
+        y_prob = y_prob.cpu().numpy()
+    
+    # Aplanar si es necesario
+    y_true = np.asarray(y_true).flatten()
+    y_prob = np.asarray(y_prob).flatten()
+    
+    # Crear bins
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    
+    for i in range(n_bins):
+        # Encontrar índices en este bin
+        bin_lower = bins[i]
+        bin_upper = bins[i + 1]
+        
+        # Caso especial para el último bin (incluye el límite superior)
+        if i == n_bins - 1:
+            idx = (y_prob >= bin_lower) & (y_prob <= bin_upper)
+        else:
+            idx = (y_prob >= bin_lower) & (y_prob < bin_upper)
+        
+        if not np.any(idx):
+            continue
+        
+        # Calcular accuracy y confianza en este bin
+        acc = np.mean((y_prob[idx] >= 0.5) == y_true[idx])
+        conf = np.mean(y_prob[idx])
+        
+        # Peso del bin (proporción de muestras en este bin)
+        bin_weight = np.sum(idx) / len(y_prob)
+        
+        # Contribución al ECE
+        ece += bin_weight * abs(acc - conf)
+    
+    return float(ece)
+
+
+def compute_f1_per_symbol(y_true: np.ndarray, y_pred: np.ndarray, 
+                          alphabet: List[str]) -> Dict[str, float]:
+    """
+    Calcula F1 score por símbolo.
+    
+    Args:
+        y_true: Array de forma (n_samples, n_symbols) con etiquetas binarias
+        y_pred: Array de forma (n_samples, n_symbols) con predicciones binarias
+        alphabet: Lista de nombres de símbolos
+    
+    Returns:
+        Dict con F1 por símbolo: {symbol: f1_score}
+    """
+    # Convertir a numpy si son tensores
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    if isinstance(y_pred, torch.Tensor):
+        y_pred = y_pred.cpu().numpy()
+    
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    
+    f1_per_symbol = {}
+    
+    for i, symbol in enumerate(alphabet):
+        y_true_symbol = y_true[:, i]
+        y_pred_symbol = y_pred[:, i]
+        
+        # Calcular F1 para este símbolo
+        f1 = f1_score(y_true_symbol, y_pred_symbol, zero_division=0)
+        f1_per_symbol[symbol] = float(f1)
+    
+    return f1_per_symbol
+
+
+def compute_f1_macro(y_true: np.ndarray, y_pred: np.ndarray, 
+                     alphabet: List[str]) -> float:
+    """
+    Calcula F1 macro (promedio de F1 por símbolo).
+    
+    Args:
+        y_true: Array de forma (n_samples, n_symbols) con etiquetas binarias
+        y_pred: Array de forma (n_samples, n_symbols) con predicciones binarias
+        alphabet: Lista de nombres de símbolos
+    
+    Returns:
+        F1 macro (promedio de F1 por símbolo)
+    """
+    f1_per_symbol = compute_f1_per_symbol(y_true, y_pred, alphabet)
+    f1_scores = list(f1_per_symbol.values())
+    
+    if len(f1_scores) == 0:
+        return 0.0
+    
+    return float(np.mean(f1_scores))
+
+
+def compute_f1_min(y_true: np.ndarray, y_pred: np.ndarray, 
+                   alphabet: List[str]) -> float:
+    """
+    Calcula F1 mínimo por símbolo.
+    
+    Args:
+        y_true: Array de forma (n_samples, n_symbols) con etiquetas binarias
+        y_pred: Array de forma (n_samples, n_symbols) con predicciones binarias
+        alphabet: Lista de nombres de símbolos
+    
+    Returns:
+        F1 mínimo por símbolo
+    """
+    f1_per_symbol = compute_f1_per_symbol(y_true, y_pred, alphabet)
+    f1_scores = list(f1_per_symbol.values())
+    
+    if len(f1_scores) == 0:
+        return 0.0
+    
+    return float(np.min(f1_scores))
+
+
+def set_accuracy_by_automata(df_test, model, tokenizer_func, threshold_per_symbol: Dict[str, float],
+                             alphabet: List[str], device: str = 'cpu') -> float:
+    """
+    Calcula exactitud de conjunto por autómata.
+    
+    La exactitud de conjunto se define como: el conjunto predicho de símbolos
+    debe ser exactamente igual al conjunto verdadero de símbolos.
+    
+    Args:
+        df_test: DataFrame con columnas 'dfa_id', 'regex', y columnas A-L
+        model: Modelo entrenado
+        tokenizer_func: Función que tokeniza regex: regex -> (indices, length)
+        threshold_per_symbol: Dict con umbrales por símbolo: {symbol: threshold}
+        alphabet: Lista de nombres de símbolos
+        device: Dispositivo ('cpu' o 'cuda')
+    
+    Returns:
+        Exactitud de conjunto (proporción de autómatas con predicción exacta)
+    """
+    model.eval()
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        for _, row in df_test.iterrows():
+            regex = str(row['regex'])
+            
+            # Obtener conjunto verdadero de símbolos
+            true_set = {sym for sym in alphabet if row[sym] == 1}
+            
+            # Tokenizar regex
+            regex_indices, length = tokenizer_func(regex)
+            regex_indices = regex_indices.unsqueeze(0).to(device)  # (1, max_len)
+            lengths = torch.tensor([length], dtype=torch.long).to(device)  # (1,)
+            
+            # Inferencia
+            logits = model(regex_indices, lengths, return_logits=True)
+            probs = torch.sigmoid(logits).cpu().numpy()[0]  # (alphabet_size,)
+            
+            # Construir conjunto predicho usando thresholds por símbolo
+            pred_set = set()
+            for i, symbol in enumerate(alphabet):
+                threshold = threshold_per_symbol.get(symbol, 0.5)
+                if probs[i] >= threshold:
+                    pred_set.add(symbol)
+            
+            # Verificar si el conjunto es exacto
+            if pred_set == true_set:
+                correct += 1
+            total += 1
+    
+    return correct / total if total > 0 else 0.0
+
+
 def evaluate_metrics(y_true: np.ndarray, y_scores: np.ndarray, 
                     alphabet: List[str], threshold: float = 0.5) -> Dict[str, float]:
     """
@@ -187,7 +381,11 @@ def evaluate_metrics(y_true: np.ndarray, y_scores: np.ndarray,
             'micro_auprc': float,
             'f1_at_threshold': float,
             'coverage': float,
-            'ap_per_symbol': Dict[str, float]
+            'f1_macro': float,
+            'f1_min': float,
+            'ece': float,
+            'ap_per_symbol': Dict[str, float],
+            'f1_per_symbol': Dict[str, float]
         }
     """
     # Convertir a numpy si son tensores de PyTorch
@@ -213,11 +411,24 @@ def evaluate_metrics(y_true: np.ndarray, y_scores: np.ndarray,
     f1_at_threshold = compute_f1_at_threshold(y_true, y_scores, threshold)
     coverage = compute_coverage(ap_per_symbol)
     
+    # Calcular ECE
+    ece = expected_calibration_error(y_true, y_scores)
+    
+    # Binarizar predicciones para F1 macro y F1 min
+    y_pred = (y_scores >= threshold).astype(int)
+    f1_per_symbol = compute_f1_per_symbol(y_true, y_pred, alphabet)
+    f1_macro = compute_f1_macro(y_true, y_pred, alphabet)
+    f1_min = compute_f1_min(y_true, y_pred, alphabet)
+    
     return {
         'macro_auprc': macro_auprc,
         'micro_auprc': micro_auprc,
         'f1_at_threshold': f1_at_threshold,
         'coverage': coverage,
-        'ap_per_symbol': ap_per_symbol
+        'f1_macro': f1_macro,
+        'f1_min': f1_min,
+        'ece': ece,
+        'ap_per_symbol': ap_per_symbol,
+        'f1_per_symbol': f1_per_symbol
     }
 

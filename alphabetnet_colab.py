@@ -121,18 +121,28 @@ def char_to_idx(char: str) -> int:
     else:
         raise ValueError(f"Carácter inválido: {char}")
 
-def prefix_to_indices(prefix: str, max_len: int = MAX_PREFIX_LEN) -> Tuple[torch.Tensor, int]:
-    if prefix == '<EPS>' or prefix == '':
+def regex_to_indices(regex: str, max_len: int = MAX_PREFIX_LEN) -> Tuple[torch.Tensor, int]:
+    """Convierte un regex string a índices (solo caracteres A-L se tokenizan)."""
+    if regex == '' or regex is None:
         indices = [SPECIAL_TOKENS['<EPS>']]
         length = 1
     else:
-        indices = [char_to_idx(c) for c in prefix]
-        length = len(indices)
+        # Extraer solo caracteres válidos (A-L) del regex
+        valid_chars = [c for c in regex if c in ALPHABET]
+        if len(valid_chars) == 0:
+            indices = [SPECIAL_TOKENS['<EPS>']]
+            length = 1
+        else:
+            indices = [char_to_idx(c) for c in valid_chars]
+            length = len(indices)
     
     if length < max_len:
         indices = indices + [SPECIAL_TOKENS['PAD']] * (max_len - length)
     
     return torch.tensor(indices[:max_len], dtype=torch.long), length
+
+# Alias para compatibilidad
+prefix_to_indices = regex_to_indices
 
 def set_seeds(random_seed=42, numpy_seed=42, torch_seed=42, cuda_seed=42):
     random.seed(random_seed)
@@ -149,20 +159,25 @@ def set_seeds(random_seed=42, numpy_seed=42, torch_seed=42, cuda_seed=42):
 # DATASET
 # ============================================================================
 class AlphabetDataset(Dataset):
-    def __init__(self, parquet_path: Path, max_prefix_len: int = MAX_PREFIX_LEN):
-        self.df = pd.read_parquet(parquet_path)
-        self.max_prefix_len = max_prefix_len
-        self.labels = np.array(self.df['y'].tolist(), dtype=np.float32)
+    """Dataset para datos en formato regex-sigma (CSV)."""
+    def __init__(self, csv_path: Path, max_regex_len: int = MAX_PREFIX_LEN):
+        self.df = pd.read_csv(csv_path)
+        self.max_regex_len = max_regex_len
+        # Convertir columnas A-L a arrays numpy
+        label_columns = [col for col in ALPHABET if col in self.df.columns]
+        if len(label_columns) != ALPHABET_SIZE:
+            raise ValueError(f"Faltan columnas de alfabeto. Esperadas: {ALPHABET_SIZE}, encontradas: {len(label_columns)}")
+        self.labels = self.df[label_columns].values.astype(np.float32)
     
     def __len__(self) -> int:
         return len(self.df)
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         row = self.df.iloc[idx]
-        prefix = str(row['prefix'])
-        prefix_indices, length = prefix_to_indices(prefix, self.max_prefix_len)
-        y = torch.tensor(row['y'], dtype=torch.float32)
-        return {'prefix_indices': prefix_indices, 'length': torch.tensor(length, dtype=torch.long), 'y': y}
+        regex = str(row['regex'])
+        regex_indices, length = regex_to_indices(regex, self.max_regex_len)
+        y = torch.tensor(self.labels[idx], dtype=torch.float32)
+        return {'prefix_indices': regex_indices, 'length': torch.tensor(length, dtype=torch.long), 'y': y}
 
 def collate_fn(batch: list) -> Dict[str, torch.Tensor]:
     prefix_indices = torch.stack([item['prefix_indices'] for item in batch])
@@ -208,6 +223,32 @@ def compute_micro_auprc(y_true: np.ndarray, y_scores: np.ndarray) -> float:
         return np.nan
     return average_precision_score(y_true_flat, y_scores_flat)
 
+def expected_calibration_error(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> float:
+    """Calcula Expected Calibration Error (ECE)."""
+    y_true = np.asarray(y_true).flatten()
+    y_prob = np.asarray(y_prob).flatten()
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for i in range(n_bins):
+        bin_lower = bins[i]
+        bin_upper = bins[i + 1] if i < n_bins - 1 else bins[i + 1]
+        idx = (y_prob >= bin_lower) & (y_prob <= bin_upper) if i == n_bins - 1 else (y_prob >= bin_lower) & (y_prob < bin_upper)
+        if not np.any(idx):
+            continue
+        acc = np.mean((y_prob[idx] >= 0.5) == y_true[idx])
+        conf = np.mean(y_prob[idx])
+        bin_weight = np.sum(idx) / len(y_prob)
+        ece += bin_weight * abs(acc - conf)
+    return float(ece)
+
+def compute_f1_per_symbol(y_true: np.ndarray, y_pred: np.ndarray, alphabet: List[str]) -> Dict[str, float]:
+    """Calcula F1 por símbolo."""
+    f1_per_symbol = {}
+    for i, symbol in enumerate(alphabet):
+        f1 = f1_score(y_true[:, i], y_pred[:, i], zero_division=0)
+        f1_per_symbol[symbol] = float(f1)
+    return f1_per_symbol
+
 def evaluate_metrics(y_true: np.ndarray, y_scores: np.ndarray, alphabet: List[str], threshold: float = 0.5) -> Dict[str, float]:
     if isinstance(y_true, torch.Tensor):
         y_true = y_true.cpu().numpy()
@@ -226,6 +267,12 @@ def evaluate_metrics(y_true: np.ndarray, y_scores: np.ndarray, alphabet: List[st
     y_pred_flat = y_pred.flatten()
     f1_at_threshold = f1_score(y_true_flat, y_pred_flat, average='micro', zero_division=0)
     
+    # Calcular F1 macro, F1 min y ECE
+    f1_per_symbol = compute_f1_per_symbol(y_true, y_pred, alphabet)
+    f1_macro = float(np.mean(list(f1_per_symbol.values())))
+    f1_min = float(np.min(list(f1_per_symbol.values())))
+    ece = expected_calibration_error(y_true, y_scores)
+    
     valid_symbols = sum(1 for ap in ap_per_symbol.values() if not np.isnan(ap))
     coverage = (valid_symbols / len(ap_per_symbol)) * 100.0 if ap_per_symbol else 0.0
     
@@ -234,7 +281,11 @@ def evaluate_metrics(y_true: np.ndarray, y_scores: np.ndarray, alphabet: List[st
         'micro_auprc': micro_auprc,
         'f1_at_threshold': f1_at_threshold,
         'coverage': coverage,
-        'ap_per_symbol': ap_per_symbol
+        'f1_macro': f1_macro,
+        'f1_min': f1_min,
+        'ece': ece,
+        'ap_per_symbol': ap_per_symbol,
+        'f1_per_symbol': f1_per_symbol
     }
 
 # ============================================================================
@@ -490,14 +541,16 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Usando dispositivo: {device}")
     
-    # Rutas de datos (Colab sample_data)
-    train_path = Path('sample_data/train_wide.parquet')
-    val_path = Path('sample_data/val_wide.parquet')
+    # Rutas de datos (Colab - dataset regex-sigma)
+    data_path = Path('data/dataset_regex_sigma.csv')
     
-    if not train_path.exists() or not val_path.exists():
-        print("ERROR: Archivos de datos no encontrados en sample_data/")
-        print("Por favor, sube train_wide.parquet y val_wide.parquet a sample_data/")
+    if not data_path.exists():
+        print("ERROR: Archivo de datos no encontrado: data/dataset_regex_sigma.csv")
+        print("Por favor, crea el dataset usando: python scripts/create_regex_sigma_dataset.py")
         return
+    
+    train_path = data_path
+    val_path = data_path
     
     # Datasets
     print("\nCargando datasets...")
@@ -528,7 +581,7 @@ def main():
     print("\n" + "="*60)
     print("ENTRENAMIENTO")
     print("="*60)
-    best_auprc_macro = -np.inf
+    best_f1_macro = -np.inf
     checkpoint_dir = Path('checkpoints')
     checkpoint_dir.mkdir(exist_ok=True)
     
@@ -538,12 +591,14 @@ def main():
         val_metrics = validate(model, val_loader, criterion, device, ALPHABET)
         
         print(f"Época {epoch+1}: Train Loss={train_loss:.6f}, "
-              f"Val auPRC Macro={val_metrics['macro_auprc']:.6f}")
+              f"Val F1 Macro={val_metrics.get('f1_macro', np.nan):.6f}, "
+              f"Val F1 Min={val_metrics.get('f1_min', np.nan):.6f}, "
+              f"Val ECE={val_metrics.get('ece', np.nan):.6f}")
         
-        # Guardar mejor checkpoint
-        auprc_macro = val_metrics['macro_auprc']
-        if not np.isnan(auprc_macro) and auprc_macro > best_auprc_macro:
-            best_auprc_macro = auprc_macro
+        # Guardar mejor checkpoint por F1 macro
+        f1_macro = val_metrics.get('f1_macro', np.nan)
+        if not np.isnan(f1_macro) and f1_macro > best_f1_macro:
+            best_f1_macro = f1_macro
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
@@ -551,11 +606,11 @@ def main():
                 'metrics': val_metrics,
                 'hparams': hparams
             }, checkpoint_dir / 'best.pt')
-            print(f"  ✓ Mejor modelo guardado (auPRC macro: {best_auprc_macro:.6f})")
+            print(f"  ✓ Mejor modelo guardado (F1 macro: {best_f1_macro:.6f})")
         
-        # Early stopping
-        if not np.isnan(auprc_macro):
-            if early_stopping(auprc_macro):
+        # Early stopping por F1 macro
+        if not np.isnan(f1_macro):
+            if early_stopping(f1_macro):
                 print(f"\nEarly stopping activado después de {epoch + 1} épocas")
                 break
     
@@ -583,9 +638,13 @@ def main():
     print("\n" + "="*60)
     print("PIPELINE COMPLETADO")
     print("="*60)
-    print(f"Mejor auPRC macro: {best_auprc_macro:.6f}")
+    print(f"Mejor F1 macro: {best_f1_macro:.6f}")
     print(f"Checkpoint: checkpoints/best.pt")
     print(f"Modelo ONNX: alphabetnet.onnx")
+    print("\nPara inferencia:")
+    print("  from infer import predict_alphabet_from_regex")
+    print("  result = predict_alphabet_from_regex('(AB)*C', model, device)")
+    print(f"  print(result)")
 
 if __name__ == '__main__':
     main()
